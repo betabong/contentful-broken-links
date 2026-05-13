@@ -27,6 +27,11 @@ export type ScanCallbacks = {
   isCancelled?: () => boolean;
 };
 
+export type RecheckResult =
+  | { entryId: string; status: 'gone' }
+  | { entryId: string; status: 'unpublished' }
+  | { entryId: string; status: 'ok'; brokenLinks: BrokenLink[] };
+
 type LinkFieldMeta = {
   fieldId: string;
   linkType: 'Entry' | 'Asset';
@@ -90,57 +95,9 @@ export async function scanBrokenLinks(
 
     const pageRefs: Ref[] = [];
     for (const entry of res.items) {
-      const ctId = entry.sys.contentType.sys.id;
-      const ctMeta = meta.get(ctId);
+      const ctMeta = meta.get(entry.sys.contentType.sys.id);
       if (!ctMeta) continue;
-
-      const titleVal = ctMeta.displayField
-        ? entry.fields[ctMeta.displayField]
-        : undefined;
-      const firstTitle = titleVal ? Object.values(titleVal)[0] : undefined;
-      const entryTitle = typeof firstTitle === 'string' ? firstTitle : undefined;
-
-      for (const lf of ctMeta.fields) {
-        const byLocale = entry.fields[lf.fieldId];
-        if (!byLocale) continue;
-        for (const [locale, value] of Object.entries(byLocale)) {
-          if (value == null) continue;
-          if (lf.isArray) {
-            if (!Array.isArray(value)) continue;
-            for (const item of value as LinkValue[]) {
-              const id = item?.sys?.id;
-              if (id) {
-                pageRefs.push({
-                  entryId: entry.sys.id,
-                  entryContentTypeId: ctId,
-                  entryTitle,
-                  entryUpdatedAt: entry.sys.updatedAt,
-                  fieldId: lf.fieldId,
-                  inArray: true,
-                  locale,
-                  linkType: lf.linkType,
-                  targetId: id,
-                });
-              }
-            }
-          } else {
-            const id = (value as LinkValue)?.sys?.id;
-            if (id) {
-              pageRefs.push({
-                entryId: entry.sys.id,
-                entryContentTypeId: ctId,
-                entryTitle,
-                entryUpdatedAt: entry.sys.updatedAt,
-                fieldId: lf.fieldId,
-                inArray: false,
-                locale,
-                linkType: lf.linkType,
-                targetId: id,
-              });
-            }
-          }
-        }
-      }
+      pageRefs.push(...collectRefsFromEntry(entry, ctMeta));
     }
 
     if (pageRefs.length > 0) {
@@ -170,6 +127,132 @@ export async function scanBrokenLinks(
   }
 }
 
+export async function recheckEntry(
+  cma: CMAClient,
+  entryId: string,
+): Promise<RecheckResult> {
+  let entry: EntryLike;
+  try {
+    entry = (await cma.entry.get({ entryId })) as unknown as EntryLike;
+  } catch (err) {
+    if (isNotFound(err)) return { entryId, status: 'gone' };
+    throw err;
+  }
+  if (!entry.sys.publishedVersion) return { entryId, status: 'unpublished' };
+
+  const ctId = entry.sys.contentType.sys.id;
+  const ct = (await cma.contentType.get({ contentTypeId: ctId })) as unknown as ContentTypeLike;
+  const linkFields = extractRequiredLinkFields(ct);
+  if (linkFields.length === 0) return { entryId, status: 'ok', brokenLinks: [] };
+
+  const ctMeta: ContentTypeMeta = {
+    displayField: ct.displayField,
+    fields: linkFields,
+  };
+  const refs = collectRefsFromEntry(entry, ctMeta);
+  if (refs.length === 0) return { entryId, status: 'ok', brokenLinks: [] };
+
+  const entryState = new Map<string, TargetState>();
+  const assetState = new Map<string, TargetState>();
+  const entryIds = uniqByType(refs, 'Entry');
+  const assetIds = uniqByType(refs, 'Asset');
+  await resolveStates(cma, entryIds, 'Entry', entryState);
+  await resolveStates(cma, assetIds, 'Asset', assetState);
+
+  const broken: BrokenLink[] = [];
+  for (const ref of refs) {
+    const state =
+      ref.linkType === 'Entry'
+        ? entryState.get(ref.targetId)
+        : assetState.get(ref.targetId);
+    const reason = classify(state);
+    if (reason) broken.push({ ...ref, reason });
+  }
+  return { entryId, status: 'ok', brokenLinks: broken };
+}
+
+type EntryLike = {
+  sys: {
+    id: string;
+    updatedAt: string;
+    publishedVersion?: number;
+    contentType: { sys: { id: string } };
+  };
+  fields: Record<string, Record<string, unknown>>;
+};
+
+type ContentTypeLike = {
+  sys: { id: string };
+  displayField?: string | null;
+  fields: Array<{
+    id: string;
+    type: string;
+    required?: boolean;
+    omitted?: boolean;
+    linkType?: string;
+    items?: { type: string; linkType?: string };
+  }>;
+};
+
+function collectRefsFromEntry(entry: EntryLike, ctMeta: ContentTypeMeta): Ref[] {
+  const out: Ref[] = [];
+  const ctId = entry.sys.contentType.sys.id;
+  const titleVal = ctMeta.displayField ? entry.fields[ctMeta.displayField] : undefined;
+  const firstTitle = titleVal ? Object.values(titleVal)[0] : undefined;
+  const entryTitle = typeof firstTitle === 'string' ? firstTitle : undefined;
+
+  for (const lf of ctMeta.fields) {
+    const byLocale = entry.fields[lf.fieldId];
+    if (!byLocale) continue;
+    for (const [locale, value] of Object.entries(byLocale)) {
+      if (value == null) continue;
+      if (lf.isArray) {
+        if (!Array.isArray(value)) continue;
+        for (const item of value as LinkValue[]) {
+          const id = item?.sys?.id;
+          if (id) {
+            out.push(makeRef(entry, ctId, entryTitle, lf, true, locale, id));
+          }
+        }
+      } else {
+        const id = (value as LinkValue)?.sys?.id;
+        if (id) {
+          out.push(makeRef(entry, ctId, entryTitle, lf, false, locale, id));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function makeRef(
+  entry: EntryLike,
+  ctId: string,
+  entryTitle: string | undefined,
+  lf: LinkFieldMeta,
+  inArray: boolean,
+  locale: string,
+  targetId: string,
+): Ref {
+  return {
+    entryId: entry.sys.id,
+    entryContentTypeId: ctId,
+    entryTitle,
+    entryUpdatedAt: entry.sys.updatedAt,
+    fieldId: lf.fieldId,
+    inArray,
+    locale,
+    linkType: lf.linkType,
+    targetId,
+  };
+}
+
+function uniqByType(refs: Ref[], linkType: 'Entry' | 'Asset'): string[] {
+  const out = new Set<string>();
+  for (const r of refs) if (r.linkType === linkType) out.add(r.targetId);
+  return Array.from(out);
+}
+
 function uniqMissing(
   refs: Ref[],
   linkType: 'Entry' | 'Asset',
@@ -182,6 +265,24 @@ function uniqMissing(
   return Array.from(out);
 }
 
+function extractRequiredLinkFields(ct: ContentTypeLike): LinkFieldMeta[] {
+  const linkFields: LinkFieldMeta[] = [];
+  for (const f of ct.fields) {
+    if (f.omitted) continue;
+    if (!f.required) continue;
+    if (f.type === 'Link' && (f.linkType === 'Entry' || f.linkType === 'Asset')) {
+      linkFields.push({ fieldId: f.id, linkType: f.linkType, isArray: false });
+    } else if (
+      f.type === 'Array' &&
+      f.items?.type === 'Link' &&
+      (f.items.linkType === 'Entry' || f.items.linkType === 'Asset')
+    ) {
+      linkFields.push({ fieldId: f.id, linkType: f.items.linkType, isArray: true });
+    }
+  }
+  return linkFields;
+}
+
 async function loadRequiredLinkFields(
   cma: CMAClient,
 ): Promise<Map<string, ContentTypeMeta>> {
@@ -189,25 +290,8 @@ async function loadRequiredLinkFields(
   let skip = 0;
   while (true) {
     const res = await cma.contentType.getMany({ query: { skip, limit: 100 } });
-    for (const ct of res.items) {
-      const linkFields: LinkFieldMeta[] = [];
-      for (const f of ct.fields) {
-        if (f.omitted) continue;
-        if (!f.required) continue;
-        if (f.type === 'Link' && (f.linkType === 'Entry' || f.linkType === 'Asset')) {
-          linkFields.push({ fieldId: f.id, linkType: f.linkType, isArray: false });
-        } else if (
-          f.type === 'Array' &&
-          f.items?.type === 'Link' &&
-          (f.items.linkType === 'Entry' || f.items.linkType === 'Asset')
-        ) {
-          linkFields.push({
-            fieldId: f.id,
-            linkType: f.items.linkType,
-            isArray: true,
-          });
-        }
-      }
+    for (const ct of res.items as unknown as ContentTypeLike[]) {
+      const linkFields = extractRequiredLinkFields(ct);
       if (linkFields.length > 0) {
         result.set(ct.sys.id, { displayField: ct.displayField, fields: linkFields });
       }
@@ -282,6 +366,12 @@ function classify(state: TargetState | undefined): BrokenReason | null {
   if (state.archivedVersion) return 'archived';
   if (!state.publishedVersion) return 'unpublished';
   return null;
+}
+
+function isNotFound(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { status?: number; statusCode?: number; name?: string };
+  return e.status === 404 || e.statusCode === 404 || e.name === 'NotFound';
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {

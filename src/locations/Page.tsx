@@ -7,6 +7,7 @@ import {
   Flex,
   FormControl,
   Heading,
+  IconButton,
   Note,
   Paragraph,
   Spinner,
@@ -14,13 +15,17 @@ import {
   Table,
   Text,
   TextLink,
+  Tooltip,
 } from '@contentful/f36-components';
+import { CycleIcon } from '@contentful/f36-icons';
 import type { PageAppSDK } from '@contentful/app-sdk';
 import { useCMA, useSDK } from '@contentful/react-apps-toolkit';
 import {
+  recheckEntry,
   scanBrokenLinks,
   type BrokenLink,
   type BrokenReason,
+  type RecheckResult,
   type ScanProgress,
 } from '../lib/scan';
 
@@ -41,6 +46,7 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [ignoreArrayDraft, setIgnoreArrayDraft] = useState(false);
   const [ignoreArrayMissing, setIgnoreArrayMissing] = useState(false);
+  const [recheckingIds, setRecheckingIds] = useState<Set<string>>(new Set());
   const cancelRef = useRef(false);
 
   const isIgnored = (b: BrokenLink) => {
@@ -92,6 +98,52 @@ export default function Page() {
 
   const stopScan = () => {
     cancelRef.current = true;
+  };
+
+  const applyRecheck = (result: RecheckResult) => {
+    setResults((prev) => {
+      const newRows =
+        result.status === 'ok' ? result.brokenLinks : [];
+      const out: BrokenLink[] = [];
+      let inserted = false;
+      for (const r of prev) {
+        if (r.entryId === result.entryId) {
+          if (!inserted) {
+            out.push(...newRows);
+            inserted = true;
+          }
+        } else {
+          out.push(r);
+        }
+      }
+      if (!inserted) out.push(...newRows);
+      return out;
+    });
+  };
+
+  const recheckOne = async (entryId: string) => {
+    setRecheckingIds((prev) => new Set(prev).add(entryId));
+    try {
+      const res = await recheckEntry(cma, entryId);
+      applyRecheck(res);
+    } catch (err) {
+      console.error('Recheck failed for entry', entryId, err);
+    } finally {
+      setRecheckingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(entryId);
+        return next;
+      });
+    }
+  };
+
+  const openEntryThenRecheck = async (entryId: string) => {
+    try {
+      await sdk.navigator.openEntry(entryId, { slideIn: true });
+    } catch {
+      // entry may have been deleted while open — recheck will reflect that
+    }
+    recheckOne(entryId);
   };
 
   return (
@@ -188,48 +240,66 @@ export default function Page() {
                   <Table.Cell>Locale</Table.Cell>
                   <Table.Cell>Target</Table.Cell>
                   <Table.Cell>Reason</Table.Cell>
+                  <Table.Cell aria-label="Actions" />
                 </Table.Row>
               </Table.Head>
               <Table.Body>
-                {visibleResults.map((b, i) => (
-                  <Table.Row
-                    key={`${b.entryId}-${b.fieldId}-${b.locale}-${b.targetId}-${i}`}
-                  >
-                    <Table.Cell>
-                      <TextLink
-                        as="button"
-                        onClick={() =>
-                          sdk.navigator.openEntry(b.entryId, { slideIn: true })
-                        }
-                      >
-                        {b.entryTitle || b.entryId}
-                      </TextLink>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Text fontColor="gray600">
-                        {formatDate(b.entryUpdatedAt)}
-                      </Text>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <code>{b.entryContentTypeId}</code>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <code>{b.fieldId}</code>
-                    </Table.Cell>
-                    <Table.Cell>{b.locale}</Table.Cell>
-                    <Table.Cell>
-                      <TextLink
-                        as="button"
-                        onClick={() => openTarget(sdk, b.linkType, b.targetId)}
-                      >
-                        {b.linkType}: <code>{b.targetId}</code>
-                      </TextLink>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Badge variant={REASON_VARIANT[b.reason]}>{b.reason}</Badge>
-                    </Table.Cell>
-                  </Table.Row>
-                ))}
+                {visibleResults.map((b, i) => {
+                  const isRechecking = recheckingIds.has(b.entryId);
+                  return (
+                    <Table.Row
+                      key={`${b.entryId}-${b.fieldId}-${b.locale}-${b.targetId}-${i}`}
+                      style={isRechecking ? { opacity: 0.5 } : undefined}
+                    >
+                      <Table.Cell>
+                        <TextLink
+                          as="button"
+                          onClick={() => openEntryThenRecheck(b.entryId)}
+                        >
+                          {b.entryTitle || b.entryId}
+                        </TextLink>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Text fontColor="gray600">
+                          {formatDate(b.entryUpdatedAt)}
+                        </Text>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <code>{b.entryContentTypeId}</code>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <code>{b.fieldId}</code>
+                      </Table.Cell>
+                      <Table.Cell>{b.locale}</Table.Cell>
+                      <Table.Cell>
+                        <TextLink
+                          as="button"
+                          onClick={() => openTarget(sdk, b.linkType, b.targetId)}
+                        >
+                          {b.linkType}: <code>{b.targetId}</code>
+                        </TextLink>
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Badge variant={REASON_VARIANT[b.reason]}>{b.reason}</Badge>
+                      </Table.Cell>
+                      <Table.Cell>
+                        {isRechecking ? (
+                          <Spinner size="small" />
+                        ) : (
+                          <Tooltip content="Recheck this entry">
+                            <IconButton
+                              variant="transparent"
+                              size="small"
+                              aria-label="Recheck this entry"
+                              icon={<CycleIcon />}
+                              onClick={() => recheckOne(b.entryId)}
+                            />
+                          </Tooltip>
+                        )}
+                      </Table.Cell>
+                    </Table.Row>
+                  );
+                })}
               </Table.Body>
             </Table>
           </Box>
