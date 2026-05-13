@@ -8,6 +8,7 @@ export type BrokenLink = {
   entryTitle?: string;
   entryUpdatedAt: string;
   fieldId: string;
+  inArray: boolean;
   locale: string;
   linkType: 'Entry' | 'Asset';
   targetId: string;
@@ -115,6 +116,7 @@ export async function scanBrokenLinks(
                   entryTitle,
                   entryUpdatedAt: entry.sys.updatedAt,
                   fieldId: lf.fieldId,
+                  inArray: true,
                   locale,
                   linkType: lf.linkType,
                   targetId: id,
@@ -130,6 +132,7 @@ export async function scanBrokenLinks(
                 entryTitle,
                 entryUpdatedAt: entry.sys.updatedAt,
                 fieldId: lf.fieldId,
+                inArray: false,
                 locale,
                 linkType: lf.linkType,
                 targetId: id,

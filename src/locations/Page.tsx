@@ -3,7 +3,9 @@ import {
   Badge,
   Box,
   Button,
+  Checkbox,
   Flex,
+  FormControl,
   Heading,
   Note,
   Paragraph,
@@ -37,7 +39,25 @@ export default function Page() {
   const [results, setResults] = useState<BrokenLink[]>([]);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ignoreArrayDraft, setIgnoreArrayDraft] = useState(false);
+  const [ignoreArrayMissing, setIgnoreArrayMissing] = useState(false);
   const cancelRef = useRef(false);
+
+  const isIgnored = (b: BrokenLink) => {
+    if (!b.inArray) return false;
+    if (ignoreArrayDraft && b.reason === 'unpublished') return true;
+    if (ignoreArrayMissing && (b.reason === 'deleted' || b.reason === 'archived')) {
+      return true;
+    }
+    return false;
+  };
+
+  const visibleResults = useMemo(
+    () => results.filter((b) => !isIgnored(b)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [results, ignoreArrayDraft, ignoreArrayMissing],
+  );
+  const ignoredCount = results.length - visibleResults.length;
 
   const summary = useMemo(() => {
     const counts: Record<BrokenReason, number> = {
@@ -45,9 +65,9 @@ export default function Page() {
       archived: 0,
       unpublished: 0,
     };
-    for (const r of results) counts[r.reason]++;
+    for (const r of visibleResults) counts[r.reason]++;
     return counts;
-  }, [results]);
+  }, [visibleResults]);
 
   const runScan = async () => {
     cancelRef.current = false;
@@ -85,6 +105,30 @@ export default function Page() {
           deleted, archived, or unpublished. Optional link fields are not checked.
         </Paragraph>
 
+        <FormControl as="fieldset">
+          <FormControl.Label as="legend">
+            Tolerate broken items inside link <em>arrays</em>
+          </FormControl.Label>
+          <Stack flexDirection="column" alignItems="flex-start" spacing="spacing2Xs">
+            <Checkbox
+              isChecked={ignoreArrayDraft}
+              onChange={(e) => setIgnoreArrayDraft(e.target.checked)}
+            >
+              Ignore unpublished (draft) items in arrays
+            </Checkbox>
+            <Checkbox
+              isChecked={ignoreArrayMissing}
+              onChange={(e) => setIgnoreArrayMissing(e.target.checked)}
+            >
+              Ignore deleted or archived items in arrays
+            </Checkbox>
+          </Stack>
+          <FormControl.HelpText>
+            Required single-link fields are always reported — only items inside{' '}
+            <code>Array&lt;Link&gt;</code> fields are filtered.
+          </FormControl.HelpText>
+        </FormControl>
+
         <Flex gap="spacingM" alignItems="center" flexWrap="wrap">
           {!scanning ? (
             <Button variant="primary" onClick={runScan}>
@@ -108,10 +152,12 @@ export default function Page() {
           )}
           {hasRun && (
             <Text fontColor="gray600">
-              {results.length} broken {results.length === 1 ? 'link' : 'links'} found
+              {visibleResults.length} broken{' '}
+              {visibleResults.length === 1 ? 'link' : 'links'}
               {summary.deleted > 0 && ` · ${summary.deleted} deleted`}
               {summary.archived > 0 && ` · ${summary.archived} archived`}
               {summary.unpublished > 0 && ` · ${summary.unpublished} unpublished`}
+              {ignoredCount > 0 && ` · ${ignoredCount} ignored`}
             </Text>
           )}
         </Flex>
@@ -122,13 +168,15 @@ export default function Page() {
           </Note>
         )}
 
-        {hasRun && !scanning && results.length === 0 && !error && (
+        {hasRun && !scanning && visibleResults.length === 0 && !error && (
           <Note variant="positive" style={{ width: '100%' }}>
-            No broken required links found across published entries.
+            {ignoredCount > 0
+              ? `No reportable broken links — ${ignoredCount} ignored by current filters.`
+              : 'No broken required links found across published entries.'}
           </Note>
         )}
 
-        {results.length > 0 && (
+        {visibleResults.length > 0 && (
           <Box style={{ width: '100%' }}>
             <Table>
               <Table.Head>
@@ -143,7 +191,7 @@ export default function Page() {
                 </Table.Row>
               </Table.Head>
               <Table.Body>
-                {results.map((b, i) => (
+                {visibleResults.map((b, i) => (
                   <Table.Row
                     key={`${b.entryId}-${b.fieldId}-${b.locale}-${b.targetId}-${i}`}
                   >
