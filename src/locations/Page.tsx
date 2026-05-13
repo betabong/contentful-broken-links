@@ -39,13 +39,20 @@ export default function Page() {
   const sdk = useSDK<PageAppSDK>();
   const cma = useCMA();
 
+  const spaceId = sdk.ids.space;
   const [scanning, setScanning] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [results, setResults] = useState<BrokenLink[]>([]);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [ignoreArrayDraft, setIgnoreArrayDraft] = useState(false);
-  const [ignoreArrayMissing, setIgnoreArrayMissing] = useState(false);
+  const [ignoreArrayDraft, setIgnoreArrayDraft] = usePersistedBool(
+    `broken-links:${spaceId}:ignore-array-draft`,
+    false,
+  );
+  const [ignoreArrayMissing, setIgnoreArrayMissing] = usePersistedBool(
+    `broken-links:${spaceId}:ignore-array-missing`,
+    false,
+  );
   const [recheckingIds, setRecheckingIds] = useState<Set<string>>(new Set());
   const cancelRef = useRef(false);
 
@@ -320,6 +327,29 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function usePersistedBool(
+  key: string,
+  initial: boolean,
+): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState<boolean>(() => {
+    try {
+      const stored = window.localStorage.getItem(key);
+      return stored === null ? initial : stored === 'true';
+    } catch {
+      return initial;
+    }
+  });
+  const set = (v: boolean) => {
+    setValue(v);
+    try {
+      window.localStorage.setItem(key, String(v));
+    } catch {
+      // ignore quota / private-mode errors — in-memory state still works
+    }
+  };
+  return [value, set];
 }
 
 function openTarget(sdk: PageAppSDK, linkType: 'Entry' | 'Asset', id: string) {
