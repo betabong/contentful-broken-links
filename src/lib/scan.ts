@@ -13,6 +13,7 @@ export type BrokenLink = {
   linkType: 'Entry' | 'Asset';
   targetId: string;
   reason: BrokenReason;
+  resolved?: boolean;
 };
 
 export type ScanProgress = {

@@ -78,8 +78,12 @@ export default function Page() {
       archived: 0,
       unpublished: 0,
     };
-    for (const r of visibleResults) counts[r.reason]++;
-    return counts;
+    let solved = 0;
+    for (const r of visibleResults) {
+      if (r.resolved) solved++;
+      else counts[r.reason]++;
+    }
+    return { counts, solved, broken: visibleResults.length - solved };
   }, [visibleResults]);
 
   const runScan = async () => {
@@ -109,21 +113,34 @@ export default function Page() {
 
   const applyRecheck = (result: RecheckResult) => {
     setResults((prev) => {
-      const newRows =
-        result.status === 'ok' ? result.brokenLinks : [];
+      const stillBroken = result.status === 'ok' ? result.brokenLinks : [];
+      const keyOf = (r: Pick<BrokenLink, 'fieldId' | 'locale' | 'targetId'>) =>
+        `${r.fieldId}|${r.locale}|${r.targetId}`;
+      const byKey = new Map(stillBroken.map((r) => [keyOf(r), r]));
+      const seen = new Set<string>();
+
       const out: BrokenLink[] = [];
-      let inserted = false;
       for (const r of prev) {
-        if (r.entryId === result.entryId) {
-          if (!inserted) {
-            out.push(...newRows);
-            inserted = true;
-          }
-        } else {
+        if (r.entryId !== result.entryId) {
           out.push(r);
+          continue;
+        }
+        if (r.resolved) {
+          out.push(r);
+          continue;
+        }
+        const k = keyOf(r);
+        seen.add(k);
+        const match = byKey.get(k);
+        if (match) {
+          out.push({ ...match, resolved: false });
+        } else {
+          out.push({ ...r, resolved: true });
         }
       }
-      if (!inserted) out.push(...newRows);
+      for (const [k, r] of byKey) {
+        if (!seen.has(k)) out.push({ ...r, resolved: false });
+      }
       return out;
     });
   };
@@ -211,11 +228,11 @@ export default function Page() {
           )}
           {hasRun && (
             <Text fontColor="gray600">
-              {visibleResults.length} broken{' '}
-              {visibleResults.length === 1 ? 'link' : 'links'}
-              {summary.deleted > 0 && ` · ${summary.deleted} deleted`}
-              {summary.archived > 0 && ` · ${summary.archived} archived`}
-              {summary.unpublished > 0 && ` · ${summary.unpublished} unpublished`}
+              {summary.broken} broken {summary.broken === 1 ? 'link' : 'links'}
+              {summary.counts.deleted > 0 && ` · ${summary.counts.deleted} deleted`}
+              {summary.counts.archived > 0 && ` · ${summary.counts.archived} archived`}
+              {summary.counts.unpublished > 0 && ` · ${summary.counts.unpublished} unpublished`}
+              {summary.solved > 0 && ` · ${summary.solved} solved`}
               {ignoredCount > 0 && ` · ${ignoredCount} ignored`}
             </Text>
           )}
@@ -232,6 +249,12 @@ export default function Page() {
             {ignoredCount > 0
               ? `No reportable broken links — ${ignoredCount} ignored by current filters.`
               : 'No broken required links found across published entries.'}
+          </Note>
+        )}
+
+        {hasRun && !scanning && summary.broken === 0 && summary.solved > 0 && (
+          <Note variant="positive" style={{ width: '100%' }}>
+            All {summary.solved} broken {summary.solved === 1 ? 'link' : 'links'} solved.
           </Note>
         )}
 
@@ -253,10 +276,10 @@ export default function Page() {
               <Table.Body>
                 {visibleResults.map((b, i) => {
                   const isRechecking = recheckingIds.has(b.entryId);
+                  const dimColor = b.resolved ? 'gray500' : undefined;
                   return (
                     <Table.Row
                       key={`${b.entryId}-${b.fieldId}-${b.locale}-${b.targetId}-${i}`}
-                      style={isRechecking ? { opacity: 0.5 } : undefined}
                     >
                       <Table.Cell>
                         <TextLink
@@ -267,17 +290,23 @@ export default function Page() {
                         </TextLink>
                       </Table.Cell>
                       <Table.Cell>
-                        <Text fontColor="gray600">
+                        <Text fontColor={dimColor ?? 'gray600'}>
                           {formatDate(b.entryUpdatedAt)}
                         </Text>
                       </Table.Cell>
                       <Table.Cell>
-                        <code>{b.entryContentTypeId}</code>
+                        <Text fontColor={dimColor}>
+                          <code>{b.entryContentTypeId}</code>
+                        </Text>
                       </Table.Cell>
                       <Table.Cell>
-                        <code>{b.fieldId}</code>
+                        <Text fontColor={dimColor}>
+                          <code>{b.fieldId}</code>
+                        </Text>
                       </Table.Cell>
-                      <Table.Cell>{b.locale}</Table.Cell>
+                      <Table.Cell>
+                        <Text fontColor={dimColor}>{b.locale}</Text>
+                      </Table.Cell>
                       <Table.Cell>
                         <TextLink
                           as="button"
@@ -287,22 +316,28 @@ export default function Page() {
                         </TextLink>
                       </Table.Cell>
                       <Table.Cell>
-                        <Badge variant={REASON_VARIANT[b.reason]}>{b.reason}</Badge>
+                        {isRechecking ? (
+                          <Flex alignItems="center" gap="spacingXs">
+                            <Spinner size="small" />
+                            <Text fontColor="gray600">Rechecking…</Text>
+                          </Flex>
+                        ) : b.resolved ? (
+                          <Badge variant="positive">Solved</Badge>
+                        ) : (
+                          <Badge variant={REASON_VARIANT[b.reason]}>{b.reason}</Badge>
+                        )}
                       </Table.Cell>
                       <Table.Cell>
-                        {isRechecking ? (
-                          <Spinner size="small" />
-                        ) : (
-                          <Tooltip content="Recheck this entry">
-                            <IconButton
-                              variant="transparent"
-                              size="small"
-                              aria-label="Recheck this entry"
-                              icon={<CycleIcon />}
-                              onClick={() => recheckOne(b.entryId)}
-                            />
-                          </Tooltip>
-                        )}
+                        <Tooltip content="Recheck this entry">
+                          <IconButton
+                            variant="transparent"
+                            size="small"
+                            aria-label="Recheck this entry"
+                            icon={<CycleIcon />}
+                            isDisabled={isRechecking}
+                            onClick={() => recheckOne(b.entryId)}
+                          />
+                        </Tooltip>
                       </Table.Cell>
                     </Table.Row>
                   );
