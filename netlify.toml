@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "build"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Contentful embeds the app in an iframe.
+    X-Frame-Options = "ALLOWALL"
+    Content-Security-Policy = "frame-ancestors https://app.contentful.com https://app.eu.contentful.com"

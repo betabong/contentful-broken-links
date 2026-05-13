@@ -1,4 +1,4 @@
-import type { PlainClientAPI } from 'contentful-management';
+import type { CMAClient } from '@contentful/app-sdk';
 
 export type BrokenReason = 'deleted' | 'unpublished' | 'archived';
 
@@ -50,7 +50,7 @@ const ENTRY_PAGE_SIZE = 100;
 const ID_BATCH_SIZE = 100;
 
 export async function scanBrokenLinks(
-  cma: PlainClientAPI,
+  cma: CMAClient,
   { onProgress, onResult, isCancelled }: ScanCallbacks,
 ): Promise<void> {
   onProgress({ phase: 'Loading content types', current: 0, total: 0 });
@@ -180,7 +180,7 @@ function uniqMissing(
 }
 
 async function loadRequiredLinkFields(
-  cma: PlainClientAPI,
+  cma: CMAClient,
 ): Promise<Map<string, ContentTypeMeta>> {
   const result = new Map<string, ContentTypeMeta>();
   let skip = 0;
@@ -216,7 +216,7 @@ async function loadRequiredLinkFields(
 }
 
 async function resolveStates(
-  cma: PlainClientAPI,
+  cma: CMAClient,
   ids: string[],
   kind: 'Entry' | 'Asset',
   cache: Map<string, TargetState>,
@@ -254,7 +254,7 @@ async function resolveStates(
 }
 
 async function fetchByIds(
-  cma: PlainClientAPI,
+  cma: CMAClient,
   kind: 'Entry' | 'Asset',
   ids: string[],
   archived: boolean,
